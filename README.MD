@@ -10,7 +10,7 @@ A coroutine-based event dispatcher for Spring applications built on Kotlin and k
 
 ```kotlin
 dependencies {
-    implementation("io.github.kostack:event-dispatcher:1.0.0")
+    implementation("io.github.kostack:event-dispatcher:<version>")
 }
 ```
 
@@ -18,7 +18,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'io.github.kostack:event-dispatcher:1.0.0'
+    implementation 'io.github.kostack:event-dispatcher:<version>'
 }
 ```
 
@@ -28,7 +28,7 @@ dependencies {
 <dependency>
     <groupId>io.github.kostack</groupId>
     <artifactId>event-dispatcher</artifactId>
-    <version>1.0.0</version>
+    <version>VERSION</version>
 </dependency>
 ```
 
