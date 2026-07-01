@@ -4,7 +4,7 @@ A coroutine-based event dispatcher for Spring applications built on Kotlin and k
 
 ## Installation
 
-**Requirements:** Spring Boot (WebFlux), Kotlin, Java 17+
+**Requirements:** Spring Boot (WebFlux), Kotlin, Java 23+
 
 ### Gradle (Kotlin DSL)
 
@@ -39,8 +39,9 @@ dependencies {
 | Type | Role |
 |------|------|
 | `AppEvent` | Marker interface for all events |
-| `SuspendEventListener<T>` | Interface for event handlers |
-| `SuspendDispatcher` | Spring component that routes events to listeners |
+| `@SuspendListener` | Annotation that marks a method as an event listener |
+| `SuspendDispatcher` | Spring component that routes events to listeners by name |
+| `SuspendDispatcherConfiguration` | Auto-configuration that wires all annotated beans |
 
 ---
 
@@ -56,36 +57,34 @@ data class UserRegisteredEvent(val userId: String, val email: String) : AppEvent
 
 ## 2. Implement a Listener
 
-Implement `SuspendEventListener<T>` and register it as a Spring bean:
+Annotate a `suspend` method with `@SuspendListener` and register the class as a Spring bean:
 
 ```kotlin
 @Component
-class UserRegisteredListener : SuspendEventListener<UserRegisteredEvent> {
-    override val eventType = UserRegisteredEvent::class
-    // optional — default is 0; higher value = higher priority
-    override val priority = 10
-    // optional — default is 30 seconds; listener is cancelled if exceeded
-    override val timeout = 5.seconds
+class UserRegisteredListener {
 
-    override suspend fun on(event: UserRegisteredEvent) {
+    @SuspendListener(name = "user.registered", priority = 10)
+    suspend fun on(event: UserRegisteredEvent) {
         println("New user registered: ${event.email}")
     }
 }
 ```
 
-### Listener properties
+`SuspendDispatcherConfiguration` automatically discovers all Spring beans that have `@SuspendListener`-annotated methods — no manual wiring needed.
 
-| Property | Default | Description |
-|----------|---------|-------------|
-| `eventType` | required | The `KClass` of the event this listener handles |
+### `@SuspendListener` parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `name` | `""` | The event name this listener handles; matched against the name passed to publish methods |
 | `priority` | `0` | Higher value = invoked first in `publishSequential` |
-| `timeout` | `30.seconds` | Max duration before the listener is cancelled |
+| `timeout` | `30000` (ms) | Max duration in milliseconds before the listener is cancelled |
 
 ---
 
 ## 3. Publish Events
 
-Inject `SuspendDispatcher` and choose a publish strategy.
+Inject `SuspendDispatcher` and choose a publish strategy. All publish methods take a `name` that selects which listeners to invoke.
 
 ### `publishSequential` — ordered, one at a time
 
@@ -97,7 +96,7 @@ class UserService(private val dispatcher: SuspendDispatcher) {
 
     suspend fun register(userId: String, email: String) {
         // ... create user ...
-        dispatcher.publishSequential(UserRegisteredEvent(userId, email))
+        dispatcher.publishSequential("user.registered", UserRegisteredEvent(userId, email))
     }
 }
 ```
@@ -108,7 +107,7 @@ All matching listeners run concurrently inside a `coroutineScope`. The call susp
 
 ```kotlin
 suspend fun notifyAll(event: UserRegisteredEvent) {
-    dispatcher.publishParallel(event)
+    dispatcher.publishParallel("user.registered", event)
     // all listeners have finished by this point
 }
 ```
@@ -119,10 +118,10 @@ Listeners are launched in the background. Returns a `List<Job>` so the caller ca
 
 ```kotlin
 // Fire and forget — don't wait
-dispatcher.publishAsync(UserRegisteredEvent(userId, email))
+dispatcher.publishAsync("user.registered", UserRegisteredEvent(userId, email))
 
 // Or wait for specific jobs
-val jobs = dispatcher.publishAsync(event, scope = this)
+val jobs = dispatcher.publishAsync("user.registered", event, scope = this)
 jobs.joinAll()
 ```
 
@@ -133,21 +132,19 @@ jobs.joinAll()
 Listeners with a higher `priority` value are invoked first:
 
 ```kotlin
-val first = object : SuspendEventListener<UserRegisteredEvent> {
-    override val eventType = UserRegisteredEvent::class
-    override val priority = 20          // invoked 1st
-    override suspend fun on(event: UserRegisteredEvent) { println("first") }
-}
+@Component
+class NotificationListeners {
 
-val second = object : SuspendEventListener<UserRegisteredEvent> {
-    override val eventType = UserRegisteredEvent::class
-    override val priority = 1           // invoked 2nd
-    override suspend fun on(event: UserRegisteredEvent) { println("second") }
-}
+    @SuspendListener(name = "user.registered", priority = 20) // invoked 1st
+    suspend fun sendWelcomeEmail(event: UserRegisteredEvent) {
+        println("first")
+    }
 
-val dispatcher = SuspendDispatcher(listOf(second, first))
-dispatcher.publishSequential(UserRegisteredEvent("1", "a@b.com"))
-// output: first, then second
+    @SuspendListener(name = "user.registered", priority = 1)  // invoked 2nd
+    suspend fun auditLog(event: UserRegisteredEvent) {
+        println("second")
+    }
+}
 ```
 
 > Priority has no effect on `publishParallel` or `publishAsync` — both launch all listeners concurrently.
@@ -159,29 +156,31 @@ dispatcher.publishSequential(UserRegisteredEvent("1", "a@b.com"))
 A failing listener does **not** propagate the exception to the caller or stop other listeners:
 
 ```kotlin
-val fragile = object : SuspendEventListener<UserRegisteredEvent> {
-    override val eventType = UserRegisteredEvent::class
-    override suspend fun on(event: UserRegisteredEvent) {
+@Component
+class FragileListener {
+
+    @SuspendListener(name = "user.registered")
+    suspend fun on(event: UserRegisteredEvent) {
         throw RuntimeException("something went wrong")
     }
 }
 
 // No exception thrown here — error is logged, execution continues
-dispatcher.publishSequential(UserRegisteredEvent("1", "a@b.com"))
+dispatcher.publishSequential("user.registered", UserRegisteredEvent("1", "a@b.com"))
 ```
 
 ---
 
 ## 6. Timeout Handling
 
-Set `timeout` on a listener to limit how long it may run. If exceeded, the listener is cancelled and an error is logged:
+Set `timeout` (in milliseconds) on a listener to limit how long it may run. If exceeded, the listener is cancelled and an error is logged:
 
 ```kotlin
-val slowListener = object : SuspendEventListener<UserRegisteredEvent> {
-    override val eventType = UserRegisteredEvent::class
-    override val timeout = 500.milliseconds
+@Component
+class SlowListener {
 
-    override suspend fun on(event: UserRegisteredEvent) {
+    @SuspendListener(name = "user.registered", timeout = 500) // 500ms
+    suspend fun on(event: UserRegisteredEvent) {
         delay(10_000) // will be cancelled after 500ms
     }
 }
@@ -191,13 +190,11 @@ val slowListener = object : SuspendEventListener<UserRegisteredEvent> {
 
 ## 7. Non-Matching Events
 
-If no listener is registered for an event type, the dispatcher logs a warning and does nothing:
+If no listener is registered for a given name, the dispatcher logs a warning and does nothing:
 
 ```kotlin
-data class UnhandledEvent(val info: String) : AppEvent
-
-// Logs: WARN — No listeners registered for event: UnhandledEvent
-dispatcher.publishSequential(UnhandledEvent("ignored"))
+// Logs: WARN — No listeners registered for name: unhandled
+dispatcher.publishSequential("unhandled", SomeEvent())
 ```
 
 ---
@@ -209,3 +206,9 @@ dispatcher.publishSequential(UnhandledEvent("ignored"))
 | `publishSequential` | Yes (by priority) | Yes | Side effects must not overlap |
 | `publishParallel` | No | Yes | Independent listeners, speed matters |
 | `publishAsync` | No | No (opt-in via jobs) | Fire-and-forget background work |
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

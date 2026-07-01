@@ -15,71 +15,75 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
-import org.springframework.stereotype.Component
+import kotlin.reflect.KClass
+import kotlin.reflect.KFunction
+import kotlin.reflect.full.callSuspend
+import kotlin.reflect.full.findAnnotation
+import kotlin.reflect.full.memberFunctions
+import kotlin.time.Duration.Companion.milliseconds
 
-@Component
-class SuspendDispatcher(
-  private val listeners: List<SuspendEventListener<out AppEvent>>
-) {
+class SuspendDispatcher(beans: List<Any>) {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-  fun <T : AppEvent> publishAsync(
-    event: T,
-    scope: CoroutineScope = this.scope
-  ): List<Job> =
-    matchingListeners(event).map { listener ->
-      scope.launch { safeInvoke(listener, event) }
+  private data class ListenerDescriptor(val bean: Any, val function: KFunction<*>, val listener: SuspendListener)
+
+  private val descriptors: List<ListenerDescriptor> =
+    beans.flatMap { bean ->
+      bean::class.memberFunctions.mapNotNull { function ->
+        val annotation =
+          function.findAnnotation<SuspendListener>()
+            ?: findAnnotationInHierarchy(bean::class, function.name, function.parameters.size)
+            ?: return@mapNotNull null
+        ListenerDescriptor(bean, function, annotation)
+      }
     }
 
-  suspend fun <T : AppEvent> publishSequential(event: T) {
-    matchingListeners(event, sorted = true).forEach { listener ->
-      safeInvoke(listener, event)
-    }
+  fun publishAsync(name: String, event: AppEvent, scope: CoroutineScope = this.scope): List<Job> =
+    matchingDescriptors(name).map { desc -> scope.launch { safeInvoke(desc, event) } }
+
+  suspend fun publishSequential(name: String, event: AppEvent) {
+    matchingDescriptors(name, sorted = true).forEach { desc -> safeInvoke(desc, event) }
   }
 
-  suspend fun <T : AppEvent> publishParallel(event: T) =
-    coroutineScope {
-      matchingListeners(event)
-        .map { listener -> async { safeInvoke(listener, event) } }
-        .awaitAll()
-    }
+  suspend fun publishParallel(name: String, event: AppEvent) = coroutineScope {
+    matchingDescriptors(name).map { desc -> async { safeInvoke(desc, event) } }.awaitAll()
+  }
 
   @PreDestroy
   fun shutdown() {
     scope.cancel()
   }
 
-  private suspend fun <T : AppEvent> safeInvoke(
-    listener: SuspendEventListener<T>,
-    event: T
-  ) {
+  private suspend fun safeInvoke(descriptor: ListenerDescriptor, event: AppEvent) {
     try {
-      withTimeout(listener.timeout) { listener.on(event) }
+      withTimeout(descriptor.listener.timeout.milliseconds) { descriptor.function.callSuspend(descriptor.bean, event) }
     } catch (_: TimeoutCancellationException) {
-      log.error("Listener timed out after {}: {}", listener.timeout, listener::class.simpleName)
+      log.error("Listener timed out after {}ms: {}", descriptor.listener.timeout, descriptor.bean::class.simpleName)
     } catch (ex: CancellationException) {
       throw ex
     } catch (ex: Exception) {
-      log.error("Listener failed: {}", listener::class.simpleName, ex)
+      log.error("Listener failed: {}", descriptor.bean::class.simpleName, ex)
     }
   }
 
-  @Suppress("UNCHECKED_CAST")
-  private fun <T : AppEvent> matchingListeners(
-    event: T,
-    sorted: Boolean = false
-  ): List<SuspendEventListener<T>> {
-    val seq =
-      listeners
-        .asSequence()
-        .filter { it.eventType == event::class }
-        .map { it as SuspendEventListener<T> }
-    val result = if (sorted) seq.sortedByDescending { it.priority }.toList() else seq.toList()
-    if (result.isEmpty()) log.warn("No listeners registered for event: {}", event::class.simpleName)
+  private fun matchingDescriptors(name: String, sorted: Boolean = false): List<ListenerDescriptor> {
+    val seq = descriptors.asSequence().filter { it.listener.name == name }
+    val result = if (sorted) seq.sortedByDescending { it.listener.priority }.toList() else seq.toList()
+    if (result.isEmpty()) log.warn("No listeners registered for name: {}", name)
     return result
   }
 
   companion object {
     val log: Logger = LoggerFactory.getLogger(SuspendDispatcher::class.java)
+
+    private fun findAnnotationInHierarchy(kClass: KClass<*>, functionName: String, paramCount: Int): SuspendListener? =
+      kClass.supertypes
+        .mapNotNull { it.classifier as? KClass<*> }
+        .firstNotNullOfOrNull { supertype ->
+          supertype.memberFunctions
+            .find { it.name == functionName && it.parameters.size == paramCount }
+            ?.findAnnotation<SuspendListener>()
+            ?: findAnnotationInHierarchy(supertype, functionName, paramCount)
+        }
   }
 }
