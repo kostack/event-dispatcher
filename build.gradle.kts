@@ -137,7 +137,7 @@ tasks.named("jar") {
 
 spotless {
   kotlin {
-    target("src/**/*.kt")
+    target("src/main/**/*.kt")
     ktlint().editorConfigOverride(mapOf("ktlint_standard_package-name" to "disabled"))
   }
   kotlinGradle {
