@@ -10,7 +10,6 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.slf4j.Logger
@@ -45,8 +44,8 @@ class SuspendDispatcher(beans: List<Any>) {
     matchingDescriptors(name, sorted = true).forEach { desc -> safeInvoke(desc, event) }
   }
 
-  suspend fun publishParallel(name: String, event: AppEvent) = coroutineScope {
-    matchingDescriptors(name).map { desc -> async { safeInvoke(desc, event) } }.awaitAll()
+  suspend fun publishParallel(name: String, event: AppEvent, scope: CoroutineScope = this.scope) {
+    matchingDescriptors(name).map { desc -> scope.async { safeInvoke(desc, event) } }.awaitAll()
   }
 
   @PreDestroy

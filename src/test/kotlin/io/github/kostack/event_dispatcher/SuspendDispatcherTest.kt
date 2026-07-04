@@ -41,7 +41,7 @@ class SuspendDispatcherTest {
   fun `publishParallel invokes DefaultListener for matching name`() = runTest {
     val event = DefaultEvent("parallel-test")
 
-    dispatcher.publishParallel("default", event)
+    dispatcher.publishParallel("default", event, this)
 
     coVerify(exactly = 1) { listener.on(event) }
   }
@@ -115,7 +115,7 @@ class SuspendDispatcherTest {
         }
       }
 
-    SuspendDispatcher(listOf(first, second)).publishParallel("multi", DefaultEvent("parallel"))
+    SuspendDispatcher(listOf(first, second)).publishParallel("multi", DefaultEvent("parallel"), this)
 
     assertEquals(2, results.size)
     assertTrue(results.containsAll(listOf("first", "second")))

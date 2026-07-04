@@ -107,7 +107,7 @@ All matching listeners run concurrently inside a `coroutineScope`. The call susp
 
 ```kotlin
 suspend fun notifyAll(event: UserRegisteredEvent) {
-    dispatcher.publishParallel("user.registered", event)
+    dispatcher.publishParallel("user.registered", event, scope = this)
     // all listeners have finished by this point
 }
 ```
