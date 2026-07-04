@@ -34,14 +34,15 @@ dependencyManagement {
 }
 
 dependencies {
+  // API
+  api("org.springframework.boot:spring-boot-starter-webflux")
+
   // Kotlin
   implementation(kotlin("reflect"))
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
 
-  implementation("org.springframework.boot:spring-boot-starter-webflux")
-  implementation("org.springframework.boot:spring-boot-configuration-processor")
-
+  // Test
   testImplementation("org.springframework.boot:spring-boot-starter-test")
   testRuntimeOnly("org.junit.platform:junit-platform-launcher")
   testImplementation("io.mockk:mockk:1.14.11")

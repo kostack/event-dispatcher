@@ -69,7 +69,7 @@ class SuspendDispatcher(beans: List<Any>) {
   private fun matchingDescriptors(name: String, sorted: Boolean = false): List<ListenerDescriptor> {
     val seq = descriptors.asSequence().filter { it.listener.name == name }
     val result = if (sorted) seq.sortedByDescending { it.listener.priority }.toList() else seq.toList()
-    if (result.isEmpty()) log.warn("No listeners registered for name: {}", name)
+    if (result.isEmpty()) log.info("No listeners registered for name: {}", name)
     return result
   }
 

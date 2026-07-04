@@ -188,17 +188,6 @@ class SlowListener {
 
 ---
 
-## 7. Non-Matching Events
-
-If no listener is registered for a given name, the dispatcher logs a warning and does nothing:
-
-```kotlin
-// Logs: WARN — No listeners registered for name: unhandled
-dispatcher.publishSequential("unhandled", SomeEvent())
-```
-
----
-
 ## Publish Strategy Comparison
 
 | Strategy | Order guaranteed | Caller waits | Use when |
