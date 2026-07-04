@@ -47,10 +47,12 @@ dependencies {
   testRuntimeOnly("org.junit.platform:junit-platform-launcher")
   testImplementation("io.mockk:mockk:1.14.11")
   testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test")
-  testFixturesImplementation(kotlin("stdlib"))
+
   testImplementation(kotlin("test"))
   testImplementation("io.projectreactor:reactor-test")
 
+  // TestFixtures
+  testFixturesImplementation(kotlin("stdlib"))
   testFixturesImplementation("org.springframework.boot:spring-boot-starter-webflux")
   testFixturesImplementation("org.springframework.boot:spring-boot-autoconfigure")
   testFixturesImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
