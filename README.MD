@@ -151,9 +151,9 @@ class NotificationListeners {
 
 ---
 
-## 5. Error Isolation
+## 5. Error Handling
 
-A failing listener does **not** propagate the exception to the caller or stop other listeners:
+Listener failures are logged and propagated. `publishSequential` stops at the failing listener, and `publishParallel` throws when awaiting a failed listener. For `publishAsync`, failures follow the supplied coroutine scope's exception handling and complete the corresponding job exceptionally.
 
 ```kotlin
 @Component
@@ -165,7 +165,7 @@ class FragileListener {
     }
 }
 
-// No exception thrown here — error is logged, execution continues
+// Throws the listener's RuntimeException after logging it
 dispatcher.publishSequential("user.registered", UserRegisteredEvent("1", "a@b.com"))
 ```
 
@@ -173,7 +173,7 @@ dispatcher.publishSequential("user.registered", UserRegisteredEvent("1", "a@b.co
 
 ## 6. Timeout Handling
 
-Set `timeout` (in milliseconds) on a listener to limit how long it may run. If exceeded, the listener is cancelled and an error is logged:
+Set `timeout` (in milliseconds) on a listener to limit how long it may run. If exceeded, the listener is cancelled, an error is logged, and the `TimeoutCancellationException` propagates through the same publishing mechanism:
 
 ```kotlin
 @Component

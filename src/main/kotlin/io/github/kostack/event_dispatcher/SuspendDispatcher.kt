@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.lang.reflect.InvocationTargetException
 import kotlin.reflect.KClass
 import kotlin.reflect.KFunction
 import kotlin.reflect.full.callSuspend
@@ -38,14 +39,14 @@ class SuspendDispatcher(beans: List<Any>) {
     }
 
   fun publishAsync(name: String, event: AppEvent, scope: CoroutineScope = this.scope): List<Job> =
-    matchingDescriptors(name).map { desc -> scope.launch { safeInvoke(desc, event) } }
+    matchingDescriptors(name).map { desc -> scope.launch { invoke(desc, event) } }
 
   suspend fun publishSequential(name: String, event: AppEvent) {
-    matchingDescriptors(name, sorted = true).forEach { desc -> safeInvoke(desc, event) }
+    matchingDescriptors(name, sorted = true).forEach { desc -> invoke(desc, event) }
   }
 
   suspend fun publishParallel(name: String, event: AppEvent, scope: CoroutineScope = this.scope) {
-    matchingDescriptors(name).map { desc -> scope.async { safeInvoke(desc, event) } }.awaitAll()
+    matchingDescriptors(name).map { desc -> scope.async { invoke(desc, event) } }.awaitAll()
   }
 
   @PreDestroy
@@ -53,15 +54,27 @@ class SuspendDispatcher(beans: List<Any>) {
     scope.cancel()
   }
 
-  private suspend fun safeInvoke(descriptor: ListenerDescriptor, event: AppEvent) {
+  private suspend fun invoke(descriptor: ListenerDescriptor, event: AppEvent) {
     try {
-      withTimeout(descriptor.listener.timeout.milliseconds) { descriptor.function.callSuspend(descriptor.bean, event) }
-    } catch (_: TimeoutCancellationException) {
-      log.error("Listener timed out after {}ms: {}", descriptor.listener.timeout, descriptor.bean::class.simpleName)
+      withTimeout(descriptor.listener.timeout.milliseconds) {
+        try {
+          descriptor.function.callSuspend(descriptor.bean, event)
+        } catch (ex: InvocationTargetException) {
+          throw ex.targetException
+        }
+      }
+    } catch (ex: TimeoutCancellationException) {
+      log.error(
+        "Listener timed out after {}ms: {}",
+        descriptor.listener.timeout,
+        descriptor.bean::class.simpleName
+      )
+      throw ex
     } catch (ex: CancellationException) {
       throw ex
     } catch (ex: Exception) {
       log.error("Listener failed: {}", descriptor.bean::class.simpleName, ex)
+      throw ex
     }
   }
 
