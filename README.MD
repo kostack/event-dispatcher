@@ -4,7 +4,12 @@ A coroutine-based event dispatcher for Spring applications built on Kotlin and k
 
 ## Installation
 
-**Requirements:** Spring Boot (WebFlux), Kotlin, Java 23+
+**Requirements** (provided by your application; the library does not bring them in):
+
+- Java 25
+- Spring Boot 4 (servlet or reactive)
+- Kotlin coroutines (`kotlinx-coroutines-core`)
+- `kotlin-reflect`
 
 ### Gradle (Kotlin DSL)
 

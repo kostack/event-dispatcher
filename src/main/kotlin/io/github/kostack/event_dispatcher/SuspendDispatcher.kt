@@ -28,7 +28,9 @@ import kotlin.time.Duration
 import kotlin.time.toDuration
 import kotlin.time.toDurationUnit
 
-class SuspendDispatcher(beans: List<Any>) {
+class SuspendDispatcher(
+  beans: List<Any>
+) {
   private val scope =
     CoroutineScope(
       SupervisorJob() +
@@ -38,7 +40,11 @@ class SuspendDispatcher(beans: List<Any>) {
         }
     )
 
-  private data class ListenerDescriptor(val bean: Any, val function: KFunction<*>, val listener: SuspendListener) {
+  private data class ListenerDescriptor(
+    val bean: Any,
+    val function: KFunction<*>,
+    val listener: SuspendListener
+  ) {
     val timeout: Duration = listener.timeout.toDuration(listener.timeUnit.toDurationUnit())
   }
 
@@ -53,10 +59,17 @@ class SuspendDispatcher(beans: List<Any>) {
       }
     }
 
-  fun publishAsync(name: String, event: AppEvent, scope: CoroutineScope = this.scope): List<Job> =
-    matchingDescriptors(name).map { desc -> scope.launch { invoke(desc, event) } }
+  fun publishAsync(
+    name: String,
+    event: AppEvent,
+    scope: CoroutineScope = this.scope
+  ): List<Job> = matchingDescriptors(name).map { desc -> scope.launch { invoke(desc, event) } }
 
-  suspend fun publishSequential(name: String, event: AppEvent, stopOnFailure: Boolean = true) {
+  suspend fun publishSequential(
+    name: String,
+    event: AppEvent,
+    stopOnFailure: Boolean = true
+  ) {
     val failures = mutableListOf<ListenerException>()
     for (desc in matchingDescriptors(name, sorted = true)) {
       try {
@@ -110,7 +123,10 @@ class SuspendDispatcher(beans: List<Any>) {
     scope.cancel()
   }
 
-  private suspend fun invoke(descriptor: ListenerDescriptor, event: AppEvent) {
+  private suspend fun invoke(
+    descriptor: ListenerDescriptor,
+    event: AppEvent
+  ) {
     val name = listenerName(descriptor)
     val completed =
       try {
@@ -143,7 +159,10 @@ class SuspendDispatcher(beans: List<Any>) {
     throw first
   }
 
-  private fun matchingDescriptors(name: String, sorted: Boolean = false): List<ListenerDescriptor> {
+  private fun matchingDescriptors(
+    name: String,
+    sorted: Boolean = false
+  ): List<ListenerDescriptor> {
     val seq = descriptors.asSequence().filter { it.listener.name == name }
     val result = if (sorted) seq.sortedByDescending { it.listener.priority }.toList() else seq.toList()
     if (result.isEmpty()) log.info("No listeners registered for name: {}", name)
@@ -153,7 +172,11 @@ class SuspendDispatcher(beans: List<Any>) {
   companion object {
     val log: Logger = LoggerFactory.getLogger(SuspendDispatcher::class.java)
 
-    private fun findAnnotationInHierarchy(kClass: KClass<*>, functionName: String, paramCount: Int): SuspendListener? =
+    private fun findAnnotationInHierarchy(
+      kClass: KClass<*>,
+      functionName: String,
+      paramCount: Int
+    ): SuspendListener? =
       kClass.supertypes
         .mapNotNull { it.classifier as? KClass<*> }
         .firstNotNullOfOrNull { supertype ->

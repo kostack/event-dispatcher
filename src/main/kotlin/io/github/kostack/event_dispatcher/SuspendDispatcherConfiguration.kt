@@ -6,7 +6,9 @@ import org.springframework.context.ApplicationContext
 import org.springframework.context.annotation.Bean
 
 @AutoConfiguration
-internal class SuspendDispatcherConfiguration(private val applicationContext: ApplicationContext) {
+internal class SuspendDispatcherConfiguration(
+  private val applicationContext: ApplicationContext
+) {
   @Bean
   @ConditionalOnMissingBean
   fun suspendDispatcher(): SuspendDispatcher {
