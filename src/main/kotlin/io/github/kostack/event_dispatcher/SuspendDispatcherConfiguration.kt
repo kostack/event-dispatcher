@@ -4,6 +4,8 @@ import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.context.ApplicationContext
 import org.springframework.context.annotation.Bean
+import org.springframework.core.annotation.AnnotatedElementUtils
+import org.springframework.util.ReflectionUtils
 
 @AutoConfiguration
 internal class SuspendDispatcherConfiguration(
@@ -25,12 +27,7 @@ internal class SuspendDispatcherConfiguration(
     return SuspendDispatcher(beans)
   }
 
-  private fun hasAnySuspendListenerMethod(clazz: Class<*>): Boolean {
-    var current: Class<*>? = clazz
-    while (current != null && current != Any::class.java) {
-      if (current.declaredMethods.any { it.isAnnotationPresent(SuspendListener::class.java) }) return true
-      current = current.superclass
-    }
-    return false
-  }
+  private fun hasAnySuspendListenerMethod(clazz: Class<*>): Boolean =
+    (ReflectionUtils.getAllDeclaredMethods(clazz).asSequence() + clazz.methods.asSequence())
+      .any { AnnotatedElementUtils.hasAnnotation(it, SuspendListener::class.java) }
 }

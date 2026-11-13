@@ -1,29 +1,43 @@
-# Event Dispatcher — Usage Guide
+# Event Dispatcher
 
-A coroutine-based event dispatcher for Spring applications built on Kotlin and kotlinx.coroutines.
+A coroutine-based event dispatcher for Spring Boot applications written in Kotlin:
 
-## Installation
+- **Annotation-based listeners**: mark a bean method with `@SuspendListener` and it is discovered automatically
+- **Three publish strategies**: sequential by priority, parallel, or fire-and-forget
+- **Per-listener timeouts**
+- **Predictable failures**: listener errors reach the caller as a `ListenerException` naming the listener
 
-**Requirements** (provided by your application; the library does not bring them in):
+## Requirements
 
 - Java 25
 - Spring Boot 4 (servlet or reactive)
 - Kotlin coroutines (`kotlinx-coroutines-core`)
-- `kotlin-reflect`
+- Kotlin reflection (`kotlin-reflect`)
 
-### Gradle (Kotlin DSL)
+## Installation
+
+The library does not bring Spring, coroutines or Kotlin reflection with it: your application provides them, at the
+versions its own Spring Boot manages. Add the library next to them.
+
+### Gradle Kotlin DSL
 
 ```kotlin
 dependencies {
-    implementation("io.github.kostack:event-dispatcher:<version>")
+  implementation("org.springframework.boot:spring-boot-starter")
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
+  implementation("org.jetbrains.kotlin:kotlin-reflect")
+  implementation("io.github.kostack:event-dispatcher:<version>")
 }
 ```
 
-### Gradle (Groovy DSL)
+### Gradle Groovy DSL
 
 ```groovy
 dependencies {
-    implementation 'io.github.kostack:event-dispatcher:<version>'
+  implementation 'org.springframework.boot:spring-boot-starter'
+  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core'
+  implementation 'org.jetbrains.kotlin:kotlin-reflect'
+  implementation 'io.github.kostack:event-dispatcher:<version>'
 }
 ```
 
@@ -31,11 +45,27 @@ dependencies {
 
 ```xml
 <dependency>
-    <groupId>io.github.kostack</groupId>
-    <artifactId>event-dispatcher</artifactId>
-    <version>VERSION</version>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter</artifactId>
+</dependency>
+<dependency>
+  <groupId>org.jetbrains.kotlinx</groupId>
+  <artifactId>kotlinx-coroutines-core</artifactId>
+</dependency>
+<dependency>
+  <groupId>org.jetbrains.kotlin</groupId>
+  <artifactId>kotlin-reflect</artifactId>
+</dependency>
+<dependency>
+  <groupId>io.github.kostack</groupId>
+  <artifactId>event-dispatcher</artifactId>
+  <version>VERSION</version>
 </dependency>
 ```
+
+> Any Spring Boot starter (`spring-boot-starter-web`, `spring-boot-starter-webflux`, …) includes
+> `spring-boot-starter`, and most Spring Boot Kotlin projects already have `kotlin-reflect`. If one of these is
+> missing, the build still succeeds but the application fails at runtime with `NoClassDefFoundError`.
 
 ---
 
@@ -44,15 +74,16 @@ dependencies {
 | Type | Role |
 |------|------|
 | `AppEvent` | Marker interface for all events |
-| `@SuspendListener` | Annotation that marks a method as an event listener |
-| `SuspendDispatcher` | Spring component that routes events to listeners by name |
-| `SuspendDispatcherConfiguration` | Auto-configuration that wires all annotated beans |
+| `@SuspendListener` | Marks a bean method as a listener for an event name |
+| `SuspendDispatcher` | Routes events to listeners by name; registered as a bean by auto-configuration |
+| `ListenerException` | Thrown when a listener fails; names the listener and wraps the original exception |
+| `ListenerTimeoutException` | `ListenerException` thrown when a listener exceeds its timeout |
 
 ---
 
 ## 1. Define an Event
 
-Implement `AppEvent` — a data class is the typical choice:
+Implement `AppEvent`; a data class is the typical choice:
 
 ```kotlin
 data class UserRegisteredEvent(val userId: String, val email: String) : AppEvent
@@ -62,84 +93,114 @@ data class UserRegisteredEvent(val userId: String, val email: String) : AppEvent
 
 ## 2. Implement a Listener
 
-Annotate a `suspend` method with `@SuspendListener` and register the class as a Spring bean:
+Annotate a method that takes the event as its only parameter, and register the class as a Spring bean. The method is
+usually `suspend`, but plain functions work too:
 
 ```kotlin
 @Component
 class UserRegisteredListener {
-
-    @SuspendListener(name = "user.registered", priority = 10)
-    suspend fun on(event: UserRegisteredEvent) {
-        println("New user registered: ${event.email}")
-    }
+  @SuspendListener(name = "user.registered", priority = 10)
+  suspend fun on(event: UserRegisteredEvent) {
+    println("New user registered: ${event.email}")
+  }
 }
 ```
 
-`SuspendDispatcherConfiguration` automatically discovers all Spring beans that have `@SuspendListener`-annotated methods — no manual wiring needed.
+At startup, the auto-configuration finds every Spring bean with a `@SuspendListener` method and registers it with the
+`SuspendDispatcher` bean. No manual wiring is needed. To replace the dispatcher, declare your own `SuspendDispatcher`
+bean.
+
+The annotation can also sit on a method of a superclass or an interface that the bean overrides; the override inherits
+it:
+
+```kotlin
+interface UserEvents {
+  @SuspendListener(name = "user.registered")
+  suspend fun onRegistered(event: UserRegisteredEvent)
+}
+
+@Component
+class UserEventsHandler : UserEvents {
+  override suspend fun onRegistered(event: UserRegisteredEvent) {
+    // ...
+  }
+}
+```
+
+Listeners are matched by `name` only, not by event type. Every listener for a name must accept every event published
+under that name; a listener whose parameter type does not match fails with a `ListenerException`.
 
 ### `@SuspendListener` parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `name` | `""` | The event name this listener handles; matched against the name passed to publish methods |
+| `name` | `""` | The event name this listener handles; matched against the name passed to the publish methods |
 | `priority` | `0` | Higher value = invoked first in `publishSequential` |
-| `timeout` | `30000` | Max duration, in `timeUnit`, before the listener is cancelled |
+| `timeout` | `30000` | Maximum duration, in `timeUnit`, before the listener is cancelled |
 | `timeUnit` | `TimeUnit.MILLISECONDS` | Unit of `timeout` |
 
 ---
 
 ## 3. Publish Events
 
-Inject `SuspendDispatcher` and choose a publish strategy. All publish methods take a `name` that selects which listeners to invoke.
+Inject `SuspendDispatcher` and choose a publish strategy. All publish methods take a `name` that selects which listeners
+to invoke. Publishing a name with no listeners does nothing (it is logged at `INFO`).
 
-### `publishSequential` — ordered, one at a time
+### `publishSequential`: ordered, one at a time
 
-Listeners are invoked one after another in descending priority order. Each listener finishes before the next starts.
+Listeners are invoked one after another, in descending priority order. Each listener finishes before the next starts.
 
 ```kotlin
 @Service
 class UserService(private val dispatcher: SuspendDispatcher) {
-
-    suspend fun register(userId: String, email: String) {
-        // ... create user ...
-        dispatcher.publishSequential("user.registered", UserRegisteredEvent(userId, email))
-    }
+  suspend fun register(userId: String, email: String) {
+    // ... create user ...
+    dispatcher.publishSequential("user.registered", UserRegisteredEvent(userId, email))
+  }
 }
 ```
 
-### `publishParallel` — concurrent, caller waits for all
+### `publishParallel`: concurrent, caller waits for all
 
-All matching listeners run concurrently. The call suspends until every listener has completed, or until the first failure (see [Error Handling](#5-error-handling)).
+All matching listeners run concurrently. The call suspends until every listener has completed, or until the first
+failure (see [Error Handling](#5-error-handling)).
 
-By default, listeners run on the dispatcher's own scope (`Dispatchers.IO`, cancelled when the application shuts down). Pass `scope` to run them in your own scope instead, for example to use a different dispatcher or to tie them to a request's lifecycle. Cancelling that scope cancels the listeners, but a failing listener never cancels the scope.
+By default, listeners run on the dispatcher's own scope (`Dispatchers.IO`, cancelled when the application shuts down).
+Pass `scope` to run them in your own scope instead, for example to use a different dispatcher or to tie them to a
+request's lifecycle. Cancelling that scope cancels the listeners, but a failing listener never cancels the scope.
 
 ```kotlin
 suspend fun notifyAll(event: UserRegisteredEvent) {
-    dispatcher.publishParallel("user.registered", event)
-    // all listeners have finished by this point
+  dispatcher.publishParallel("user.registered", event)
+  // all listeners have finished by this point
 }
 
 // Or run the listeners in the caller's scope
-suspend fun notifyAllInCallerScope(event: UserRegisteredEvent) = coroutineScope {
+suspend fun notifyAllInCallerScope(event: UserRegisteredEvent) =
+  coroutineScope {
     dispatcher.publishParallel("user.registered", event, scope = this)
-}
+  }
 ```
 
-### `publishAsync` — fire-and-forget, returns jobs
+### `publishAsync`: fire-and-forget, returns jobs
 
-Listeners are launched in the background. Returns a `List<Job>` so the caller can choose whether to wait or not. `publishAsync` is not a `suspend` function, so it can be called from anywhere.
+Listeners are launched in the background, and one `Job` per listener is returned so the caller can choose whether to
+wait. `publishAsync` is not a `suspend` function, so it can be called from anywhere.
 
 ```kotlin
-// Fire and forget on the dispatcher's own scope — don't wait
+// Fire and forget on the dispatcher's own scope; don't wait
 dispatcher.publishAsync("user.registered", UserRegisteredEvent(userId, email))
 
 // Or launch in your own scope and wait for the jobs
-suspend fun registerAndWait(event: UserRegisteredEvent) = coroutineScope {
+suspend fun registerAndWait(event: UserRegisteredEvent) =
+  coroutineScope {
     dispatcher.publishAsync("user.registered", event, scope = this).joinAll()
-}
+  }
 ```
 
-When you pass your own scope, failures go to that scope's `CoroutineExceptionHandler`, or cancel it if it is not a supervisor scope (as with `coroutineScope`). Use a `supervisorScope` if one listener's failure should not cancel the others.
+When you pass your own scope, failures go to that scope's `CoroutineExceptionHandler`, or cancel the scope if it is not
+a supervisor scope (as with `coroutineScope`). Use a `supervisorScope` if one listener's failure should not cancel the
+others.
 
 ---
 
@@ -150,66 +211,84 @@ Listeners with a higher `priority` value are invoked first:
 ```kotlin
 @Component
 class NotificationListeners {
+  @SuspendListener(name = "user.registered", priority = 20) // invoked 1st
+  suspend fun sendWelcomeEmail(event: UserRegisteredEvent) {
+    println("first")
+  }
 
-    @SuspendListener(name = "user.registered", priority = 20) // invoked 1st
-    suspend fun sendWelcomeEmail(event: UserRegisteredEvent) {
-        println("first")
-    }
-
-    @SuspendListener(name = "user.registered", priority = 1)  // invoked 2nd
-    suspend fun auditLog(event: UserRegisteredEvent) {
-        println("second")
-    }
+  @SuspendListener(name = "user.registered", priority = 1) // invoked 2nd
+  suspend fun auditLog(event: UserRegisteredEvent) {
+    println("second")
+  }
 }
 ```
 
-> Priority has no effect on `publishParallel` or `publishAsync` — both launch all listeners concurrently.
+> Priority has no effect on `publishParallel` or `publishAsync`: both run all listeners concurrently.
 
 ---
 
 ## 5. Error Handling
 
-A failing listener's exception is wrapped in a `ListenerException`, which names the listener (`listenerName`) and keeps the original exception as its `cause`. The dispatcher does not log it, so it is logged once, wherever you handle it.
+A failing listener's exception is wrapped in a `ListenerException`, which names the listener (`listenerName`, for
+example `UserRegisteredListener.on`) and keeps the original exception as its `cause`. The dispatcher does not log it, so
+it is logged once, wherever you handle it.
 
-- `publishSequential` stops at the first failing listener and throws. Pass `stopOnFailure = false` to run every listener anyway: the first failure is thrown, with any later ones attached as suppressed exceptions.
-- `publishParallel` fails fast: it throws the first failure after cancelling the remaining listeners and waiting for them to finish. Pass `stopOnFailure = false` to let every listener finish instead; the first failure (in listener order) is then thrown, with any others attached as suppressed exceptions. Either way, a failure never cancels the scope you pass in.
-- `publishAsync` failures complete the listener's job exceptionally and go to the supplied scope's `CoroutineExceptionHandler`. On the dispatcher's default scope they are logged.
+| Strategy | Default (`stopOnFailure = true`) | `stopOnFailure = false` |
+|----------|----------------------------------|-------------------------|
+| `publishSequential` | Stops at the first failing listener and throws its exception | Runs every listener, then throws the first failure with later ones attached as suppressed exceptions |
+| `publishParallel` | Throws the first failure after cancelling the remaining listeners and waiting for them to stop | Lets every listener finish, then throws the first failure (in listener order) with the others attached as suppressed exceptions |
 
-JVM-fatal errors (`VirtualMachineError`, such as `OutOfMemoryError`) and cancellation are rethrown unwrapped.
+`publishParallel` never cancels the scope you pass in, whichever mode you use.
+
+`publishAsync` failures complete the listener's job exceptionally and go to the supplied scope's
+`CoroutineExceptionHandler`. On the dispatcher's default scope, they are logged.
+
+Cancellation always stops publishing and propagates unwrapped. JVM-fatal errors (`VirtualMachineError`, such as
+`OutOfMemoryError`) are rethrown unwrapped too.
 
 ```kotlin
 @Component
 class FragileListener {
-
-    @SuspendListener(name = "user.registered")
-    suspend fun on(event: UserRegisteredEvent) {
-        throw RuntimeException("something went wrong")
-    }
+  @SuspendListener(name = "user.registered")
+  suspend fun on(event: UserRegisteredEvent) {
+    throw IllegalStateException("something went wrong")
+  }
 }
 
-// Throws ListenerException(cause = RuntimeException("something went wrong"))
-dispatcher.publishSequential("user.registered", UserRegisteredEvent("1", "a@b.com"))
+try {
+  dispatcher.publishSequential("user.registered", UserRegisteredEvent("1", "a@b.com"))
+} catch (ex: ListenerException) {
+  // ex.listenerName == "FragileListener.on", ex.cause is the IllegalStateException
+  log.error("Publishing user.registered failed", ex)
+}
 ```
 
 ---
 
 ## 6. Timeout Handling
 
-Set `timeout` (in `timeUnit`, milliseconds by default) on a listener to limit how long it may run. If exceeded, the listener is cancelled and a `ListenerTimeoutException` (a subclass of `ListenerException`) propagates through the same publishing mechanism as any other failure. It is not a `CancellationException`, so callers and `CoroutineExceptionHandler`s see it as a failure rather than as cancellation:
+Set `timeout` (in `timeUnit`, milliseconds by default) on a listener to limit how long it may run. If it is exceeded,
+the listener is cancelled and a `ListenerTimeoutException` (a subclass of `ListenerException`, with the configured
+`timeout` as a `Duration`) propagates like any other failure. It is not a `CancellationException`, so callers and
+`CoroutineExceptionHandler`s see it as a failure rather than as cancellation.
 
 ```kotlin
 @Component
-class SlowListener {
+class SlowListeners {
+  @SuspendListener(name = "user.registered", timeout = 500) // 500 ms
+  suspend fun quick(event: UserRegisteredEvent) {
+    delay(10_000) // cancelled after 500 ms
+  }
 
-    @SuspendListener(name = "user.registered", timeout = 500) // 500ms
-    // or: @SuspendListener(name = "user.registered", timeout = 2, timeUnit = TimeUnit.SECONDS)
-    suspend fun on(event: UserRegisteredEvent) {
-        delay(10_000) // will be cancelled after 500ms
-    }
+  @SuspendListener(name = "user.registered", timeout = 2, timeUnit = TimeUnit.SECONDS)
+  suspend fun slower(event: UserRegisteredEvent) {
+    delay(10_000) // cancelled after 2 s
+  }
 }
 ```
 
-A timeout from a `withTimeout` inside the listener is not a listener timeout: it surfaces as a plain `ListenerException` whose cause is the `TimeoutCancellationException`.
+A timeout from a `withTimeout` inside the listener is not a listener timeout: it surfaces as a plain `ListenerException`
+whose cause is the `TimeoutCancellationException`.
 
 ---
 
@@ -218,11 +297,11 @@ A timeout from a `withTimeout` inside the listener is not a listener timeout: it
 | Strategy | Order guaranteed | Caller waits | Use when |
 |----------|-----------------|--------------|----------|
 | `publishSequential` | Yes (by priority) | Yes | Side effects must not overlap |
-| `publishParallel` | No | Yes (until all finish, or the first failure by default) | Independent listeners, speed matters |
-| `publishAsync` | No | No (opt-in via jobs) | Fire-and-forget background work |
+| `publishParallel` | No | Yes, until all finish (or the first failure, by default) | Independent listeners, speed matters |
+| `publishAsync` | No | No (opt-in via the returned jobs) | Fire-and-forget background work |
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE).
