@@ -78,7 +78,8 @@ class UserRegisteredListener {
 |-----------|---------|-------------|
 | `name` | `""` | The event name this listener handles; matched against the name passed to publish methods |
 | `priority` | `0` | Higher value = invoked first in `publishSequential` |
-| `timeout` | `30000` (ms) | Max duration in milliseconds before the listener is cancelled |
+| `timeout` | `30000` | Max duration, in `timeUnit`, before the listener is cancelled |
+| `timeUnit` | `TimeUnit.MILLISECONDS` | Unit of `timeout` |
 
 ---
 
@@ -103,27 +104,37 @@ class UserService(private val dispatcher: SuspendDispatcher) {
 
 ### `publishParallel` — concurrent, caller waits for all
 
-All matching listeners run concurrently inside a `coroutineScope`. The call suspends until every listener completes.
+All matching listeners run concurrently. The call suspends until every listener has completed, or until the first failure (see [Error Handling](#5-error-handling)).
+
+By default, listeners run on the dispatcher's own scope (`Dispatchers.IO`, cancelled when the application shuts down). Pass `scope` to run them in your own scope instead, for example to use a different dispatcher or to tie them to a request's lifecycle. Cancelling that scope cancels the listeners, but a failing listener never cancels the scope.
 
 ```kotlin
 suspend fun notifyAll(event: UserRegisteredEvent) {
-    dispatcher.publishParallel("user.registered", event, scope = this)
+    dispatcher.publishParallel("user.registered", event)
     // all listeners have finished by this point
+}
+
+// Or run the listeners in the caller's scope
+suspend fun notifyAllInCallerScope(event: UserRegisteredEvent) = coroutineScope {
+    dispatcher.publishParallel("user.registered", event, scope = this)
 }
 ```
 
 ### `publishAsync` — fire-and-forget, returns jobs
 
-Listeners are launched in the background. Returns a `List<Job>` so the caller can choose whether to wait or not.
+Listeners are launched in the background. Returns a `List<Job>` so the caller can choose whether to wait or not. `publishAsync` is not a `suspend` function, so it can be called from anywhere.
 
 ```kotlin
-// Fire and forget — don't wait
+// Fire and forget on the dispatcher's own scope — don't wait
 dispatcher.publishAsync("user.registered", UserRegisteredEvent(userId, email))
 
-// Or wait for specific jobs
-val jobs = dispatcher.publishAsync("user.registered", event, scope = this)
-jobs.joinAll()
+// Or launch in your own scope and wait for the jobs
+suspend fun registerAndWait(event: UserRegisteredEvent) = coroutineScope {
+    dispatcher.publishAsync("user.registered", event, scope = this).joinAll()
+}
 ```
+
+When you pass your own scope, failures go to that scope's `CoroutineExceptionHandler`, or cancel it if it is not a supervisor scope (as with `coroutineScope`). Use a `supervisorScope` if one listener's failure should not cancel the others.
 
 ---
 
@@ -153,7 +164,13 @@ class NotificationListeners {
 
 ## 5. Error Handling
 
-Listener failures are logged and propagated. `publishSequential` stops at the failing listener, and `publishParallel` throws when awaiting a failed listener. For `publishAsync`, failures follow the supplied coroutine scope's exception handling and complete the corresponding job exceptionally.
+A failing listener's exception is wrapped in a `ListenerException`, which names the listener (`listenerName`) and keeps the original exception as its `cause`. The dispatcher does not log it, so it is logged once, wherever you handle it.
+
+- `publishSequential` stops at the first failing listener and throws. Pass `stopOnFailure = false` to run every listener anyway: the first failure is thrown, with any later ones attached as suppressed exceptions.
+- `publishParallel` fails fast: it throws the first failure after cancelling the remaining listeners and waiting for them to finish. Pass `stopOnFailure = false` to let every listener finish instead; the first failure (in listener order) is then thrown, with any others attached as suppressed exceptions. Either way, a failure never cancels the scope you pass in.
+- `publishAsync` failures complete the listener's job exceptionally and go to the supplied scope's `CoroutineExceptionHandler`. On the dispatcher's default scope they are logged.
+
+JVM-fatal errors (`VirtualMachineError`, such as `OutOfMemoryError`) and cancellation are rethrown unwrapped.
 
 ```kotlin
 @Component
@@ -165,7 +182,7 @@ class FragileListener {
     }
 }
 
-// Throws the listener's RuntimeException after logging it
+// Throws ListenerException(cause = RuntimeException("something went wrong"))
 dispatcher.publishSequential("user.registered", UserRegisteredEvent("1", "a@b.com"))
 ```
 
@@ -173,18 +190,21 @@ dispatcher.publishSequential("user.registered", UserRegisteredEvent("1", "a@b.co
 
 ## 6. Timeout Handling
 
-Set `timeout` (in milliseconds) on a listener to limit how long it may run. If exceeded, the listener is cancelled, an error is logged, and the `TimeoutCancellationException` propagates through the same publishing mechanism:
+Set `timeout` (in `timeUnit`, milliseconds by default) on a listener to limit how long it may run. If exceeded, the listener is cancelled and a `ListenerTimeoutException` (a subclass of `ListenerException`) propagates through the same publishing mechanism as any other failure. It is not a `CancellationException`, so callers and `CoroutineExceptionHandler`s see it as a failure rather than as cancellation:
 
 ```kotlin
 @Component
 class SlowListener {
 
     @SuspendListener(name = "user.registered", timeout = 500) // 500ms
+    // or: @SuspendListener(name = "user.registered", timeout = 2, timeUnit = TimeUnit.SECONDS)
     suspend fun on(event: UserRegisteredEvent) {
         delay(10_000) // will be cancelled after 500ms
     }
 }
 ```
+
+A timeout from a `withTimeout` inside the listener is not a listener timeout: it surfaces as a plain `ListenerException` whose cause is the `TimeoutCancellationException`.
 
 ---
 
@@ -193,7 +213,7 @@ class SlowListener {
 | Strategy | Order guaranteed | Caller waits | Use when |
 |----------|-----------------|--------------|----------|
 | `publishSequential` | Yes (by priority) | Yes | Side effects must not overlap |
-| `publishParallel` | No | Yes | Independent listeners, speed matters |
+| `publishParallel` | No | Yes (until all finish, or the first failure by default) | Independent listeners, speed matters |
 | `publishAsync` | No | No (opt-in via jobs) | Fire-and-forget background work |
 
 ---
